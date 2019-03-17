@@ -139,6 +139,9 @@ class GaussianSimulationEnvironment(Seedable):
     def __repr__(self):
         return self.__str__()
 
+    def random_arm(self):
+        return self.rng.choice(self.num_arms)
+
     def choose_arm(self, i):
         self._validate_arm_index(i)
 
@@ -198,7 +201,11 @@ class Experiment(Seedable):
             if (t + 1) % self.logging_frequency == 0:
                 logger.info(f'Experiment_{seed} at t={t + 1}')
 
-            arm_selected[t] = self.model.choose_arm(self.environment.arm_contexts)
+            try:
+                arm_selected[t] = self.model.choose_arm(self.environment.arm_contexts)
+            except:  # TODO: use models.NotFitted
+                arm_selected[t] = self.environment.random_arm()
+
             design_matrix[t], rewards[t], optimal_rewards[t] = \
                 self.environment.choose_arm(arm_selected[t])
             self.model.fit(design_matrix[:t], rewards[:t])

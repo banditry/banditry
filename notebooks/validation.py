@@ -67,7 +67,7 @@ class ModelValidator:
     def traceplot(self, fontsize=14):
         plottable_params = [(name, value)
                             for name, value in self.model.iter_params()
-                            if hasattr(value, 'shape')]
+                            if hasattr(value, 'shape') and not name.startswith('_')]
         nrows = sum((1 if len(values.shape) == 2 else
                      values.shape[1] if len(values.shape) == 3
                      else 0)

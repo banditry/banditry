@@ -112,10 +112,46 @@ class MCMCLogisticRegression(PGBaseModel):
         self.num_samples = num_samples
         self.num_burnin = num_burnin
 
+        self.beta_hat_ = None
+
     def iter_params(self):
         return ((name, value if value is None else value[self.num_burnin:])
                 for name, value in self.__dict__.items()
                 if name.endswith('_'))
+
+    def sample_from_prior(self, **kwargs):
+        raise NotImplementedError
+
+    def last_beta_sample(self, **kwargs):
+        if self.beta_hat_ is None:
+            params = self.sample_from_prior(**kwargs)
+            if isinstance(params, tuple):
+                return params[-1]  # convention is that beta_hat is last param drawn
+            else:
+                return params  # assumes beta is only param drawn
+        else:
+            return self.beta_hat_[-1]
+
+    def transform(self, X, num_burnin=None):
+        self.raise_if_not_fitted()
+
+        # Optionally override default burnin.
+        num_burnin = self.num_burnin if num_burnin is None else num_burnin
+        beta_trace = self.beta_hat_[num_burnin:]
+
+        # Compute logits and then transform to rates
+        logits = X.dot(beta_trace.T)
+        return sps.expit(logits)
+
+    def choose_arm(self, context):
+        beta_hat = self.last_beta_sample()
+
+        # Compute logits and then transform to rates
+        logits = context.dot(beta_hat)
+        rates = sps.expit(logits)
+
+        # Choose best arm for this "plausible model."
+        return np.argmax(rates)
 
 
 class LogisticRegression(MCMCLogisticRegression):
@@ -132,9 +168,6 @@ class LogisticRegression(MCMCLogisticRegression):
         # Hyperparameters
         self.m0 = m0
         self.P0 = P0
-
-        # Set up empty parameters
-        self.beta_hat_ = None
 
     def sample_from_prior(self):
         return self.rng.multivariate_normal(self.m0, self.P0)
@@ -153,6 +186,7 @@ class LogisticRegression(MCMCLogisticRegression):
         P0_inv = np.linalg.inv(self.P0)
         P0_inv_m0 = P0_inv.dot(self.m0)
         kappas = (y - 0.5).T
+        XTkappa = X.T.dot(kappas)
         num_predictors = X.shape[1]
 
         # Init memory for parameter traces
@@ -161,42 +195,19 @@ class LogisticRegression(MCMCLogisticRegression):
         # Init trace from prior
         beta_hat[0] = self.sample_from_prior()
 
+        # Set fitted parameters on instance
+        self.beta_hat_ = beta_hat[1:]  # discard initial sample from prior
+
         for i in range(1, self.num_samples + 1):
             omegas = draw_omegas(X, beta_hat[i - 1], self.pg_rng)
 
             # TODO: speed this up by computing inverse via Cholesky decomposition
             V_omega = np.linalg.inv((X.T * omegas).dot(X) + P0_inv)
-            m_omega = V_omega.dot(X.T.dot(kappas) + P0_inv_m0)
+            m_omega = V_omega.dot(XTkappa + P0_inv_m0)
 
             beta_hat[i] = self.rng.multivariate_normal(m_omega, V_omega)
 
-        # Set fitted parameters on instance
-        self.beta_hat_ = beta_hat[1:]  # discard initial sample from prior
         return self
-
-    def transform(self, X, num_burnin=None):
-        self.raise_if_not_fitted()
-
-        # Optionally override default burnin.
-        num_burnin = self.num_burnin if num_burnin is None else num_burnin
-        beta_trace = self.beta_hat_[num_burnin:]
-
-        # Compute logits and then transform to rates
-        logits = X.dot(beta_trace.T)
-        return sps.expit(logits)
-
-    def choose_arm(self, context):
-        if self.beta_hat_ is None:
-            beta_hat = self.rng.multivariate_normal(self.m0, self.P0)
-        else:
-            beta_hat = self.beta_hat_[-1]
-
-        # Compute logits and then transform to rates
-        logits = context.dot(beta_hat)
-        rates = sps.expit(logits)
-
-        # Choose best arm for this "plausible model."
-        return np.argmax(rates)
 
 
 class LogisticRegressionNIW(MCMCLogisticRegression):
@@ -221,7 +232,6 @@ class LogisticRegressionNIW(MCMCLogisticRegression):
         # Set up empty parameters
         self.Sigma_hat_ = None
         self.mu_hat_ = None
-        self.beta_hat_ = None
 
     def sample_from_prior(self, Psi0=None):
         if Psi0 is None:
@@ -316,29 +326,235 @@ class LogisticRegressionNIW(MCMCLogisticRegression):
 
         return self
 
-    def transform(self, X, num_burnin=None):
-        self.raise_if_not_fitted()
 
-        # Optionally override default burnin.
-        num_burnin = self.num_burnin if num_burnin is None else num_burnin
-        beta_trace = self.beta_hat_[num_burnin:]
+"""
+Perhaps break the design up into a distribution object like
+scipy's frozen distributions and a trace object that contains the actual
+samples for the trace?
 
-        # Compute logits and then transform to rates
-        logits = X.dot(beta_trace.T)
-        return sps.expit(logits)
+Then you can have one distribution representing the prior values based
+on the hyperparameters and another based on the posterior values created
+for each sample. One thought is to have these be mutable, in order to re-use
+this object across samples. However, this doesn't really work out because
+after we make the first update, we'd lose the initial hyperparameters. So
+another option is to just have a `draw_from_posterior` method that does the
+updates and then takes a draw based on those updated values, then discards
+the updated values.
+"""
+class IGGDist:
 
-    def choose_arm(self, context):
-        if self.beta_hat_ is None:
-            _, _, beta_hat = self.sample_from_prior()
+    __slots__ = ['mapping', 'a0', 'b0', 'c0', 'd0']
+
+    def __init__(self, mapping, a0=0.5, b0=0, c0=0.001, d0=0.001):
+        """
+        Args:
+            mapping (np.ndarray): index corresponds to coefficient index,
+                and value corresponds to coefficient group membership.
+            a0 (float): > 0, shape parameter for coefficient IG prior.
+            b0 (float): >= 0, additive factor on the IG rate prior. This is not the
+                same as the rate itself and is broken out to facilitate re-use of
+                this class for both the prior and the posterior distributions. In
+                the posterior, this will capture the observed sum of squared
+                deviations. In the prior, it should always be 0.
+            c0 (float): > 0, shape parameter for IG rate prior (Gamma).
+            d0 (float): > 0, rate parameter for IG rate prior (Gamma).
+        """
+        self.mapping = mapping
+        self.a0 = a0
+        self.b0 = b0
+        self.c0 = c0
+        self.d0 = d0
+
+    @property
+    def num_groups(self):
+        return len(np.unique(self.mapping))
+
+    @property
+    def num_coefficients(self):
+        return len(self.mapping)
+
+    def group_masks(self):
+        return [(self.mapping == i) for i in range(self.num_groups)]
+
+    def rvs(self, size=None, rng=None):
+        """
+        Args:
+            size (int): number of samples to draw.
+            rng (np.random.RandomState): RNG to use for drawing samples.
+
+        Returns:
+            tuple[np.ndarray]: samples for each parameter in the distribution.
+        """
+        if rng is None:
+            rng = np.random.RandomState()
+
+        # Pooled prior across variance scales
+        b_size = ((self.num_groups,) if size is None else
+                  (self.num_groups, size))
+        b = stats.gamma.rvs(
+            self.c0, scale=(1 / self.d0), size=b_size, random_state=rng)
+        scale = b + self.b0
+
+        sigma_sq = stats.invgamma.rvs(self.a0, scale=scale, random_state=rng)
+
+        return b, sigma_sq
+
+    def update(self, sigma_sq, beta):
+        c_t, d_t = self._update_b(sigma_sq)
+        a_t, b_t = self._update_sigma_sq(beta)
+        return self.__class__(self.mapping, a_t, b_t, c_t, d_t)
+
+    def _update_b(self, sigma_sq):
+        c_t = self.c0 + self.num_groups * self.a0
+
+        # d_t is the rate parameter, which is the inverse of the scale
+        sum_sigma_sq = np.sum(sigma_sq)
+        d_t = self.d0 + (1 / sum_sigma_sq if sum_sigma_sq > 0 else 0)
+        return c_t, d_t
+
+    def _update_sigma_sq(self, beta):
+        group_masks = self.group_masks()
+        a_t = self.a0 + 0.5 * np.array([np.sum(mask)
+                                        for mask in group_masks])
+        # TODO: use beta[mask] - prior_mean
+        b_t = 0.5 * np.array([np.sum(np.square(beta[mask]))
+                              for mask in group_masks])
+        return a_t, b_t
+
+
+"""
+There's something fundamentally whacked out about the current design of these
+classes. In general, it's impossible to draw samples from the prior and set up
+memory for the parameter traces before actually seeing what the data is going
+to look like. These procedures make more sense to have on objects that are
+created for each fit using the data passed during that fit.
+"""
+class LogisticRegressionIGG(MCMCLogisticRegression):
+    """Bayesian logistic regression model with NIG prior, fitted with PG-augmented Gibbs."""
+
+    def __init__(self, mapping_type='pooled', a0=0.5, c0=0.01, d0=0.01, **kwargs):
+        """
+        Args:
+            mapping_type (str): specify which coefficients will be mapped together.
+                'pooled': all grouped together
+                'unpooled': each coefficient has unique scale parameter
+                'by_order': effects at each order of interaction are grouped
+            a0 (float): 1/2 prior sample size for effect variance.
+            c0 (float): 1/2 prior sample size for effect variance scale.
+            d0 (float): 1/2 prior sum of variance for effect variance scale.
+        """
+        super().__init__(**kwargs)
+
+        # Hyperparameters
+        self.mapping_type = mapping_type
+        self.a0 = a0
+        self.c0 = c0
+        self.d0 = d0
+
+        # Set up empty parameters
+        self._mapping_ = None
+        self.sigma_sq_hat_ = None
+        self.b_hat_ = None
+
+    def get_prior(self, mapping=None):
+        if self._mapping_ is None:
+            if mapping is None:
+                raise ValueError("if model is not yet fit, must pass mapping")
         else:
-            beta_hat = self.beta_hat_[-1]
+            mapping = self._mapping_
 
-        # Compute logits and then transform to rates
-        logits = context.dot(beta_hat)
-        rates = sps.expit(logits)
+        return IGGDist(mapping, self.a0, self.c0, self.d0)
 
-        # Choose best arm for this "plausible model."
-        return np.argmax(rates)
+    def sample_from_prior(self, mapping=None):
+        prior = self.get_prior(mapping)
+        b, sigma_sq = prior.rvs(rng=self.rng)
+
+        # Broadcast group variances to number of coefficients
+        # print(sigma_sq, b_size, rate)
+        if prior.num_groups == 1:
+            variances = np.ones(prior.num_coefficients) * sigma_sq
+        else:
+            variances = sigma_sq[prior.mapping]
+
+        # Use shape from variances in case we're drawing multiple samples
+        # print(variances.shape)
+        prior_means = np.zeros(variances.shape)
+
+        # Draw coefficients; this incorporates shared information across groups
+        # via common broadcasted variance terms.
+        beta = self.rng.normal(prior_means, variances)
+
+        return b, sigma_sq, beta
+
+    def last_sample(self, mapping=None):
+        try:
+            self.raise_if_not_fitted()
+            return self.b_hat_[-1], self.sigma_sq_hat_[-1], self.beta_hat_[-1]
+        except NotFitted:
+            return self.sample_from_prior(mapping)
+
+    def construct_coefficient_mapping(self, X):
+        num_predictors = X.shape[1]
+        if self.mapping_type == 'pooled':
+            return np.zeros(num_predictors, dtype=np.int)
+        elif self.mapping_type == 'unpooled':
+            return np.arange(num_predictors, dtype=np.int)
+        elif self.mapping_type == 'by_order':
+            raise ValueError("mapping_type='by_order' not currently supported")
+        else:
+            raise ValueError(f"unrecognized mapping_type {self.mapping_type}")
+
+    def fit(self, X, y):
+        """Fit the model using Gibbs sampler.
+
+        Args:
+            X (np.ndarray): design matrix
+            y (np.ndarray): responses (binary rewards)
+
+        Returns:
+            self: reference to fitted model object (this instance).
+
+        WARNING: calling fit multiple times in a row may produce different results
+            if the hyperparameters haven't been set. The first time, they'll be set
+            from the data, and the next time, those values will be re-used.
+        """
+        num_predictors = X.shape[1]
+        self._mapping_ = self.construct_coefficient_mapping(X)
+        prior = self.get_prior()
+
+        # Precompute some values that will be re-used in loops
+        kappas = (y - 0.5).T
+        XTkappa = X.T.dot(kappas)
+
+        # Init memory for parameter traces
+        b_hat = np.ndarray((self.num_samples + 1, prior.num_groups))
+        sigma_sq_hat = np.ndarray((self.num_samples + 1, prior.num_groups))
+        beta_hat = np.ndarray((self.num_samples + 1, num_predictors))
+
+        # Init traces from priors
+        b_hat[0], sigma_sq_hat[0], beta_hat[0] = self.last_sample()
+
+        # Assign the instance parameters to be views of the traces that
+        # exclude the initial samples from the prior
+        self.sigma_sq_hat_ = sigma_sq_hat[1:]
+        self.b_hat_ = b_hat[1:]
+        self.beta_hat_ = beta_hat[1:]
+
+        for s in range(1, self.num_samples + 1):
+            omegas = draw_omegas(X, beta_hat[s - 1], self.pg_rng)
+
+            # Draw betas
+            Lambda = np.diag(1 / sigma_sq_hat[s - 1][self._mapping_])
+            # TODO: speed this up by computing inverse via Cholesky decomposition
+            V_omega = np.linalg.inv((X.T * omegas).dot(X) + Lambda)
+            m_omega = V_omega.dot(XTkappa)
+            beta_hat[s] = self.rng.multivariate_normal(m_omega, V_omega)
+
+            # Draw b and sigma_sq
+            post_dist = prior.update(sigma_sq_hat[s - 1], beta_hat[s])
+            b_hat[s], sigma_sq_hat[s] = post_dist.rvs(rng=self.rng)
+
+        return self
 
 
 # This is the form from Bishop's PRML (p. 218)
