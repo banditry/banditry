@@ -1,3 +1,4 @@
+import os
 import logging
 from concurrent import futures
 
@@ -161,6 +162,122 @@ class GaussianSimulationEnvironment(Seedable):
         if i < 0 or i >= self.num_arms:
             raise ValueError(
                 f'arm a must satisfy: 0 < a < {self.num_arms}; got {i}')
+
+
+class SingleScenarioMetrics:
+    """Record metrics from a single replication of an experiment."""
+
+    arm_colname = 'arm'
+    reward_colname = 'reward'
+    optimal_reward_colname = 'optimal_reward'
+
+    def __init__(self, seed, num_time_steps, num_predictors):
+        self.seed = seed
+        self.design_matrix = np.ndarray((num_time_steps, num_predictors))
+        self.rewards = np.ndarray(num_time_steps)
+        self.optimal_rewards = np.ndarray(num_time_steps)
+        self.arm_selected = np.ndarray(num_time_steps, dtype=np.uint)
+
+    @property
+    def num_time_steps(self):
+        return self.design_matrix.shape[0]
+
+    @property
+    def num_predictors(self):
+        return self.design_matrix.shape[1]
+
+    @property
+    def predictor_colnames(self):
+        return [f'p{i}' for i in range(self.num_predictors)]
+
+    @property
+    def colnames(self):
+        return self.predictor_colnames + [
+            self.arm_colname, self.reward_colname, self.optimal_reward_colname]
+
+    def as_df(self):
+        df = pd.DataFrame(index=pd.Index(np.arange(self.num_time_steps), name='time_step'),
+                          columns=self.colnames)
+        df.loc[:, self.predictor_colnames] = self.design_matrix
+        df.loc[:, self.arm_colname] = self.arm_selected
+        df.loc[:, self.reward_colname] = self.rewards
+        df.loc[:, self.optimal_reward_colname] = self.optimal_rewards
+        return df
+
+    @classmethod
+    def from_df(cls, df):
+        instance = cls(*df.shape)
+
+        instance.design_matrix[:] = df.iloc[:, instance.predictor_colnames]
+        instance.arm_selected[:] = df[instance.arm_colname]
+        instance.reward_colname[:] = df[instance.reward_colname]
+        instance.optimal_rewards[:] = df[instance.optimal_reward_colname]
+
+        return instance
+
+    def save(self, path):
+        path = self._standardize_path(path)
+        df = self.as_df()
+        logger.info(f'saving metrics to {path}')
+        df.to_csv(path)
+
+    def _standardize_path(self, path):
+        name, ext = os.path.splitext(path)
+        return f'{name}_{self.seed}.csv'
+
+    @classmethod
+    def load(cls, path):
+        df = pd.read_csv(path)
+        return cls.from_df(df)
+
+
+class CrossScenarioMetrics:
+    """Record metrics from multiple replications of the same experiment."""
+
+    def __init__(self, metrics=None):
+        self._metrics = None
+        self._seed_to_replication = None
+
+        # Will build seed to replication mapping
+        self.metrics = metrics
+
+    @property
+    def metrics(self):
+        return self._metrics
+
+    @metrics.setter
+    def metrics(self, metrics):
+        self._metrics = metrics
+        self._rebuild_mapping()
+
+    def append(self, metrics):
+        if metrics.seed in self._seed_to_replication:
+            logger.warning(f"replacing metrics with seed {metrics.seed}")
+            self.remove(metrics.seed)
+
+        self.metrics.append(metrics)
+        self._seed_to_replication[metrics.seed] = metrics
+
+    def remove(self, seed_or_metrics):
+        if isinstance(seed_or_metrics, SingleScenarioMetrics):
+            self.metrics.remove(seed_or_metrics)
+        else:
+            metrics = self[seed_or_metrics]
+            self.metrics.remove(metrics)
+
+    def _rebuild_mapping(self):
+        self._seed_to_replication = {m.seed: m for m in self._metrics}
+
+    def __getitem__(self, seed):
+        return self._seed_to_replication[seed]
+
+    def save(self, dirpath):
+        """Save each metrics object at `dirpath/<seed>.csv`."""
+        raise NotImplementedError
+
+    @classmethod
+    def load(cls, dirpath):
+        raise NotImplementedError
 
 
 class Experiment(Seedable):
