@@ -345,7 +345,7 @@ class IGGDist:
 
     __slots__ = ['mapping', 'a0', 'b0', 'c0', 'd0']
 
-    def __init__(self, mapping, a0=0.5, b0=0, c0=0.001, d0=0.001):
+    def __init__(self, mapping, a0=0.01, b0=0, c0=0.01, d0=0.1):
         """
         Args:
             mapping (np.ndarray): index corresponds to coefficient index,
@@ -416,7 +416,6 @@ class IGGDist:
         group_masks = self.group_masks()
         a_t = self.a0 + 0.5 * np.array([np.sum(mask)
                                         for mask in group_masks])
-        # TODO: use beta[mask] - prior_mean
         b_t = 0.5 * np.array([np.sum(np.square(beta[mask]))
                               for mask in group_masks])
         return a_t, b_t
@@ -432,7 +431,7 @@ created for each fit using the data passed during that fit.
 class LogisticRegressionIGG(MCMCLogisticRegression):
     """Bayesian logistic regression model with NIG prior, fitted with PG-augmented Gibbs."""
 
-    def __init__(self, mapping_type='pooled', a0=0.5, c0=0.01, d0=0.01, **kwargs):
+    def __init__(self, mapping_type='pooled', a0=0.01, c0=0.01, d0=0.01, **kwargs):
         """
         Args:
             mapping_type (str): specify which coefficients will be mapped together.
