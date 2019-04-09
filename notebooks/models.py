@@ -20,12 +20,17 @@ class Seedable:
         self._initial_seed = seed
         self.rng = np.random.RandomState(self._initial_seed)
 
+    @property
+    def initial_seed(self):
+        return self._initial_seed
+
     def seed(self, seed):
-        self.rng.seed(seed)
+        self._initial_seed = seed
+        self.rng.seed(self._initial_seed)
         return self
 
     def reset(self):
-        self.seed(self._initial_seed)
+        self.rng.seed(self._initial_seed)
         return self
 
 
@@ -103,6 +108,21 @@ def draw_omegas(design_matrix, theta, pg_rng):
     return omegas
 
 
+class Agent:
+    def choose_arm(self, context):
+        raise NotImplementedError
+
+
+class EqualAllocationAgent(Agent, Seedable):
+
+    def __init__(self, num_arms, **kwargs):
+        Seedable.__init__(self, **kwargs)
+        self.num_arms = num_arms
+
+    def choose_arm(self, context):
+        return self.rng.random_integers(0, self.num_arms)
+
+
 class MCMCLogisticRegression(PGBaseModel):
 
     def __init__(self, num_samples=100, num_burnin=0, **kwargs):
@@ -151,7 +171,8 @@ class MCMCLogisticRegression(PGBaseModel):
         rates = sps.expit(logits)
 
         # Choose best arm for this "plausible model."
-        return np.argmax(rates)
+        # Break ties randomly.
+        return self.rng.choice(np.flatnonzero(rates == rates.max()))
 
 
 class LogisticRegression(MCMCLogisticRegression):

@@ -30,7 +30,7 @@ def plot_cum_regret(rewards, optimal_rewards, ax=None, **kwargs):
     return ax
 
 
-# TODO: import from common base module
+# TODO: this is duplicated from models; import from common base module
 class Seedable:
     """Inherit from this class to get methods useful for objects
     using random seeds.
@@ -39,12 +39,17 @@ class Seedable:
         self._initial_seed = seed
         self.rng = np.random.RandomState(self._initial_seed)
 
+    @property
+    def initial_seed(self):
+        return self._initial_seed
+
     def seed(self, seed):
-        self.rng.seed(seed)
+        self._initial_seed = seed
+        self.rng.seed(self._initial_seed)
         return self
 
     def reset(self):
-        self.seed(self._initial_seed)
+        self.rng.seed(self._initial_seed)
         return self
 
 
@@ -167,16 +172,21 @@ class GaussianSimulationEnvironment(Seedable):
 class SingleScenarioMetrics:
     """Record metrics from a single replication of an experiment."""
 
-    arm_colname = 'arm'
-    reward_colname = 'reward'
-    optimal_reward_colname = 'optimal_reward'
+    _action_colname = '_action_'
+    _optimal_action_colname = '_optimal_action_'
+    _reward_colname = '_reward_'
+    _optimal_reward_colname = '_optimal_reward_'
+    _compute_time_colname = '_compute_time_'
 
     def __init__(self, seed, num_time_steps, num_predictors):
         self.seed = seed
         self.design_matrix = np.ndarray((num_time_steps, num_predictors))
-        self.rewards = np.ndarray(num_time_steps)
-        self.optimal_rewards = np.ndarray(num_time_steps)
-        self.arm_selected = np.ndarray(num_time_steps, dtype=np.uint)
+
+        self.actions = np.ndarray(num_time_steps, dtype=np.uint)
+        self.optimal_actions = np.ndarray(num_time_steps, dtype=np.uint)
+        self.rewards = np.ndarray(num_time_steps, dtype=np.float)
+        self.optimal_rewards = np.ndarray(num_time_steps, dtype=np.float)
+        self.time_per_decision = np.ndarray(num_time_steps, dtype=np.float)
 
     @property
     def num_time_steps(self):
@@ -191,17 +201,24 @@ class SingleScenarioMetrics:
         return [f'p{i}' for i in range(self.num_predictors)]
 
     @property
+    def metadata_colnames(self):
+        return [self._action_colname, self._optimal_action_colname,
+                self._reward_colname, self._optimal_reward_colname,
+                self._compute_time_colname]
+
+    @property
     def colnames(self):
-        return self.predictor_colnames + [
-            self.arm_colname, self.reward_colname, self.optimal_reward_colname]
+        return self.predictor_colnames + self.metadata_colnames
 
     def as_df(self):
         df = pd.DataFrame(index=pd.Index(np.arange(self.num_time_steps), name='time_step'),
                           columns=self.colnames)
         df.loc[:, self.predictor_colnames] = self.design_matrix
-        df.loc[:, self.arm_colname] = self.arm_selected
-        df.loc[:, self.reward_colname] = self.rewards
-        df.loc[:, self.optimal_reward_colname] = self.optimal_rewards
+        df.loc[:, self._action_colname] = self.actions
+        df.loc[:, self._optimal_action_colname] = self.optimal_actions
+        df.loc[:, self._reward_colname] = self.rewards
+        df.loc[:, self._optimal_reward_colname] = self.optimal_rewards
+        df.loc[:, self._compute_time_colname] = self.time_per_decision
         return df
 
     @classmethod
@@ -209,9 +226,11 @@ class SingleScenarioMetrics:
         instance = cls(*df.shape)
 
         instance.design_matrix[:] = df.iloc[:, instance.predictor_colnames]
-        instance.arm_selected[:] = df[instance.arm_colname]
-        instance.reward_colname[:] = df[instance.reward_colname]
-        instance.optimal_rewards[:] = df[instance.optimal_reward_colname]
+        instance.actions[:] = df[instance._action_colname]
+        instance.optimal_actions[:] = df[instance._optimal_action_colname]
+        instance.rewards[:] = df[instance._reward_colname]
+        instance.optimal_rewards[:] = df[instance._optimal_reward_colname]
+        instance.time_per_decision[:] = df[instance._compute_time_colname]
 
         return instance
 
@@ -219,7 +238,7 @@ class SingleScenarioMetrics:
         path = self._standardize_path(path)
         df = self.as_df()
         logger.info(f'saving metrics to {path}')
-        df.to_csv(path)
+        df.to_csv(path, index=False)
 
     def _standardize_path(self, path):
         name, ext = os.path.splitext(path)
@@ -320,7 +339,7 @@ class Experiment(Seedable):
 
             try:
                 arm_selected[t] = self.model.choose_arm(self.environment.arm_contexts)
-            except:  # TODO: use models.NotFitted
+            except:  # TODO: use models.NotFitted once you have a proper package structure
                 arm_selected[t] = self.environment.random_arm()
 
             design_matrix[t], rewards[t], optimal_rewards[t] = \
