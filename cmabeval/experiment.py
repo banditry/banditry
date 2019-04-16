@@ -321,12 +321,20 @@ class ExperimentMetrics:
     def __getitem__(self, seed):
         return self.replications[seed]
 
+    def __iter__(self):
+        return self.replications.values()
+
     def add_replication(self, metrics):
         self.replications[metrics.seed] = metrics
 
     def add_replications(self, metrics):
         for m in metrics:
             self.add_replication(m)
+
+    def plot_cum_regret(self):
+        rewards = np.array([m.rewards for m in self])
+        optimals = np.array([m.optimal_rewards for m in self])
+        return plot_cum_regret(rewards, optimals)
 
     def save(self, dirpath):
         """Save each metrics object at `dirpath/<seed>.csv`.
@@ -424,6 +432,9 @@ class Experiment(Seedable):
 
         self.logging_frequency = logging_frequency
         self.max_workers = max_workers
+        if self.max_workers is None:
+            import multiprocessing as mp
+            self.max_workers = mp.cpu_count() - 1
 
     @property
     def num_time_steps(self):

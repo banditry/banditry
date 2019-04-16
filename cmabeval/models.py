@@ -386,7 +386,7 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
     def get_prior(self, mapping=None):
         if self._mapping_ is None:
             if mapping is None:
-                raise ValueError("if model is not yet fit, must pass mapping")
+                raise NotFitted("if model is not yet fit, must pass mapping")
         else:
             mapping = self._mapping_
 
