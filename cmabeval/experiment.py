@@ -1,5 +1,6 @@
 import os
 import logging
+import datetime
 from concurrent import futures
 
 import numpy as np
@@ -169,9 +170,26 @@ class GaussianSimulationEnvironment(Seedable):
                 f'arm a must satisfy: 0 < a < {self.num_arms}; got {i}')
 
 
-class SingleScenarioMetrics:
-    """Record metrics from a single replication of an experiment."""
+class ReplicationMetrics:
+    """Record metrics from a single replication of an experiment.
 
+    These consist of:
+
+    1.  design matrix rows observed,
+    2.  actions taken,
+    3.  associated rewards,
+    4.  optimal action possible,
+    5.  optimal reward possible, and
+    6.  compute time consumed to take action.
+
+    Replication metrics serialize as a DataFrame with two types of columns:
+
+    1.  design matrix rows stored using their column names or placeholder
+        column names with the format 'p{column_index}', and
+    2.  metadata columns (2-6 above) stored using the naming convention
+        _{metadata_element_name}_
+
+    """
     _action_colname = '_action_'
     _optimal_action_colname = '_optimal_action_'
     _reward_colname = '_reward_'
@@ -250,45 +268,44 @@ class SingleScenarioMetrics:
         return cls.from_df(df)
 
 
-class CrossScenarioMetrics:
-    """Record metrics from multiple replications of the same experiment."""
+class ExperimentMetrics:
+    """Record metrics from multiple replications of the same experiment.
 
-    def __init__(self, metrics=None):
-        self._metrics = None
-        self._seed_to_replication = None
+    Experiment metrics consist of:
 
-        # Will build seed to replication mapping
-        self.metrics = metrics
+    1.  ReplicationMetrics for each replication of the experiment
+        1.  metadata associated with the replication (e.g. random
+            seed and start, end timestamps
+    2.  metadata associated with the overall experiment, such as
+        the simulation name, model identifiers and hyperparams, etc.
 
-    @property
-    def metrics(self):
-        return self._metrics
+    Experiment metrics serialize as a directory containing:
 
-    @metrics.setter
-    def metrics(self, metrics):
-        self._metrics = metrics
-        self._rebuild_mapping()
+    1.  an index.json file containing metadata about each replication
+    2.  the serialized ReplicationMetrics CSV for each replication,
+        in a subdirectory named 'replications'
 
-    def append(self, metrics):
-        if metrics.seed in self._seed_to_replication:
-            logger.warning(f"replacing metrics with seed {metrics.seed}")
-            self.remove(metrics.seed)
+    """
+    def __init__(self, metadata):
+        self.metadata = metadata
+        self.replications = {}
 
-        self.metrics.append(metrics)
-        self._seed_to_replication[metrics.seed] = metrics
+    @classmethod
+    def from_experiment(cls, experiment):
+        # TODO: finish
+        return cls({})
 
-    def remove(self, seed_or_metrics):
-        if isinstance(seed_or_metrics, SingleScenarioMetrics):
-            self.metrics.remove(seed_or_metrics)
-        else:
-            metrics = self[seed_or_metrics]
-            self.metrics.remove(metrics)
+    def record_start(self, seed):
+        self.replications[seed] = {'start': datetime.datetime.now()}
 
-    def _rebuild_mapping(self):
-        self._seed_to_replication = {m.seed: m for m in self._metrics}
+    def record_end(self, seed):
+        self.replications[seed]['end'] = datetime.datetime.now()
+
+    def record_metrics(self, metrics):
+        self.replications[metrics.seed]['metrics'] = metrics
 
     def __getitem__(self, seed):
-        return self._seed_to_replication[seed]
+        return self.replications[seed]
 
     def save(self, dirpath):
         """Save each metrics object at `dirpath/<seed>.csv`."""
