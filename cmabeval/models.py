@@ -1,16 +1,8 @@
 import numpy as np
-from scipy import optimize
+from scipy import optimize, stats
 from scipy import special as sps
-from scipy import stats
 
-from cmabeval.base import Seedable, BaseModel, PGBaseModel
-
-
-class NotFitted(Exception):
-    """Raise when a model has not been fit and a method
-    is being called that depends on it having been fit.
-    """
-    pass
+from cmabeval.base import Seedable, BaseModel, PGBaseModel, NotFitted
 
 
 def draw_omegas(design_matrix, theta, pg_rng):

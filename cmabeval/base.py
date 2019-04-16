@@ -1,7 +1,42 @@
+import inspect
+import itertools
+
 import numpy as np
 from pypolyagamma.pypolyagamma import PyPolyaGamma
 
-from cmabeval.models import NotFitted
+
+def get_parents_with_hyperparams(klass):
+    cutoff_set = {PGBaseModel, BaseModel}
+    super_classes = klass.mro()
+
+    idx = None
+    for base_class in cutoff_set:
+        try:
+            idx = super_classes.index(base_class)
+            break
+        except ValueError:
+            pass
+
+    return super_classes[1:idx]
+
+
+def get_hyperparam_names(klass):
+    parents = get_parents_with_hyperparams(klass)
+    all_classes = [klass] + parents
+    return set(itertools.chain.from_iterable(
+        inspect.getfullargspec(class_ref).args[1:]  # exclude self
+        for class_ref in all_classes))
+
+
+def get_hyperparams(model):
+    names = get_hyperparam_names(model.__class__)
+    return {name: getattr(model, name) for name in names}
+
+
+class HasHyperparams:
+
+    def get_hyperparams(self):
+        return get_hyperparams(self)
 
 
 class Seedable:
@@ -74,7 +109,7 @@ class HasFittableParams:
             raise NotFitted(f"some parameters are None: {empty_params}")
 
 
-class BaseModel(Seedable, HasFittableParams):
+class BaseModel(Seedable, HasFittableParams, HasHyperparams):
 
     def reset(self):
         Seedable.reset(self)
@@ -82,9 +117,16 @@ class BaseModel(Seedable, HasFittableParams):
         return self
 
 
-class PGBaseModel(PGSeedable, HasFittableParams):
+class PGBaseModel(PGSeedable, HasFittableParams, HasHyperparams):
 
     def reset(self):
         PGSeedable.reset(self)
         HasFittableParams.reset_params(self)
         return self
+
+
+class NotFitted(Exception):
+    """Raise when a model has not been fit and a method
+    is being called that depends on it having been fit.
+    """
+    pass
