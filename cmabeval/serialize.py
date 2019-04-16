@@ -18,7 +18,13 @@ def is_zeros(array):
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, np.ndarray):
+        if isinstance(obj, np.bool_):
+            return int(obj)
+        elif isinstance(obj, np.integer):  # any int type
+            return int(obj)
+        elif isinstance(obj, np.floating):  # any float type
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
             # process several special cases: zeros, diagonal, identity
             values = None
             if is_zeros(obj):
@@ -28,7 +34,7 @@ class NumpyEncoder(json.JSONEncoder):
             elif is_diagonal(obj):
                 constructor = 'diag'
                 values = np.diagonal(obj).tolist()
-            else:
+            else:  # need to express as full array
                 constructor = 'array'
                 values = obj.tolist()
 
