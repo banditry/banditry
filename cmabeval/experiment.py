@@ -8,6 +8,8 @@ import pandas as pd
 from scipy import special as sps
 import matplotlib.pyplot as plt
 
+from cmabeval.base import Seedable
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,29 +31,6 @@ def plot_cum_regret(rewards, optimal_rewards, ax=None, **kwargs):
     ax.set_title(kwargs.get('title', ''), fontsize=fontsize + 2)
 
     return ax
-
-
-# TODO: this is duplicated from models; import from common base module
-class Seedable:
-    """Inherit from this class to get methods useful for objects
-    using random seeds.
-    """
-    def __init__(self, seed=42):
-        self._initial_seed = seed
-        self.rng = np.random.RandomState(self._initial_seed)
-
-    @property
-    def initial_seed(self):
-        return self._initial_seed
-
-    def seed(self, seed):
-        self._initial_seed = seed
-        self.rng.seed(self._initial_seed)
-        return self
-
-    def reset(self):
-        self.rng.seed(self._initial_seed)
-        return self
 
 
 class GaussianSimulationFactory(Seedable):
