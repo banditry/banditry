@@ -9,7 +9,8 @@ import pandas as pd
 from scipy import special as sps
 import matplotlib.pyplot as plt
 
-from cmabeval.base import Seedable, NotFitted
+from cmabeval.base import Seedable
+from cmabeval.exceptions import NotFitted, InsufficientData
 from cmabeval import serialize, versioning
 
 logger = logging.getLogger(__name__)
@@ -481,6 +482,9 @@ class Experiment(Seedable):
             else:
                 past_contexts = self.env.metrics.design_matrix[:t]
                 past_rewards = self.env.metrics.rewards[:t]
-                self.model.fit(past_contexts, past_rewards)
+                try:
+                    self.model.fit(past_contexts, past_rewards)
+                except InsufficientData as exc:
+                    logger.info(f'unable to fit model at time step {t} due to: {exc}')
 
         return self.env.metrics

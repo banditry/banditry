@@ -4,6 +4,8 @@ import itertools
 import numpy as np
 from pypolyagamma.pypolyagamma import PyPolyaGamma
 
+from cmabeval.exceptions import NotFitted
+
 
 def get_parents_with_hyperparams(klass):
     cutoff_set = {PGBaseModel, BaseModel}
@@ -123,10 +125,3 @@ class PGBaseModel(PGSeedable, HasFittableParams, HasHyperparams):
         PGSeedable.reset(self)
         HasFittableParams.reset_params(self)
         return self
-
-
-class NotFitted(Exception):
-    """Raise when a model has not been fit and a method
-    is being called that depends on it having been fit.
-    """
-    pass

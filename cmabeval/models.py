@@ -2,7 +2,8 @@ import numpy as np
 from scipy import optimize, stats
 from scipy import special as sps
 
-from cmabeval.base import Seedable, BaseModel, PGBaseModel, NotFitted
+from cmabeval.base import Seedable, BaseModel, PGBaseModel
+from cmabeval.exceptions import NotFitted, InsufficientData
 
 
 def draw_omegas(design_matrix, theta, pg_rng):
@@ -461,25 +462,30 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
         # Init traces from priors
         b_hat[0], sigma_sq_hat[0], beta_hat[0] = self.last_sample()
 
-        # Assign the instance parameters to be views of the traces that
-        # exclude the initial samples from the prior
-        self.sigma_sq_hat_ = sigma_sq_hat[1:]
-        self.b_hat_ = b_hat[1:]
-        self.beta_hat_ = beta_hat[1:]
-
         for s in range(1, self.num_samples + 1):
             omegas = draw_omegas(X, beta_hat[s - 1], self.pg_rng)
+            # z = kappas / omegas  # TODO: handle zero-division
 
             # Draw betas
             Lambda = np.diag(1 / sigma_sq_hat[s - 1][self._mapping_])
-            # TODO: speed this up by computing inverse via Cholesky decomposition
-            V_omega = np.linalg.inv((X.T * omegas).dot(X) + Lambda)
+            try:
+                # TODO: speed this up by computing inverse via Cholesky decomposition
+                V_omega = np.linalg.inv((X.T * omegas).dot(X) + Lambda)
+            except np.linalg.LinAlgError as err:
+                raise InsufficientData(err)
+
             m_omega = V_omega.dot(XTkappa)
             beta_hat[s] = self.rng.multivariate_normal(m_omega, V_omega)
 
             # Draw b and sigma_sq
             post_dist = prior.update(sigma_sq_hat[s - 1], beta_hat[s])
             b_hat[s], sigma_sq_hat[s] = post_dist.rvs(rng=self.rng)
+
+        # Assign the instance parameters to be views of the traces that
+        # exclude the initial samples from the prior
+        self.sigma_sq_hat_ = sigma_sq_hat[1:]
+        self.b_hat_ = b_hat[1:]
+        self.beta_hat_ = beta_hat[1:]
 
         return self
 
