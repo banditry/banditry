@@ -95,7 +95,7 @@ class MCMCLogisticRegression(PGBaseModel):
 class LogisticRegression(MCMCLogisticRegression):
     """Bayesian logistic regression model, fitted with PG-augmented Gibbs."""
 
-    def __init__(self, m0=None, P0=None, **kwargs):
+    def __init__(self, m0=None, P0=None, interactions=False, **kwargs):
         """
         Args:
             m0 (np.ndarray): prior mean
@@ -106,20 +106,26 @@ class LogisticRegression(MCMCLogisticRegression):
         # Hyperparameters
         self.m0 = m0
         self.P0 = P0
+        self.interactions = interactions
+
+        self.preprocessor_ = None
 
     def sample_from_prior(self):
         return self.rng.multivariate_normal(self.m0, self.P0)
 
-    def fit(self, X, y):
+    def fit(self, df, y):
         """Fit the model using Gibbs sampler.
 
         Args:
-            X (np.ndarray): design matrix
+            df (pd.DataFrame): design matrix
             y (np.ndarray): responses (binary rewards)
 
         Returns:
             self: reference to fitted model object (this instance).
         """
+        preprocessor = Preprocessor(self.interactions)
+        X = dmat = preprocessor.fit_transform(df)
+
         # Precompute some values that will be re-used in loops
         P0_inv = np.linalg.inv(self.P0)
         P0_inv_m0 = P0_inv.dot(self.m0)
@@ -151,8 +157,21 @@ class LogisticRegression(MCMCLogisticRegression):
 
         # Set fitted parameters on instance
         self.beta_hat_ = beta_hat[1:]  # discard initial sample from prior
+        self.preprocessor_ = preprocessor
 
         return self
+
+    def choose_arm(self, context):
+        self.raise_if_not_fitted()
+        preprocessed_context = self.preprocessor_.transform(context)
+        beta_hat = self.last_beta_sample()
+
+        # Compute logits and then transform to rates
+        logits = preprocessed_context.dot(beta_hat)
+        rates = sps.expit(logits)
+
+        # Choose best arm for this "plausible model." Break ties randomly.
+        return self.rng.choice(np.flatnonzero(rates == rates.max()))
 
 
 class LogisticRegressionNIW(MCMCLogisticRegression):

@@ -81,7 +81,7 @@ class ContextualBanditEnv(Seedable, gym.Env):
 
         self.num_arms = num_arms
         self.num_context = num_context
-        self.num_predictors = num_arms + num_context
+        self.num_predictors = 1 + num_context  # 1 for arm categorical
         self.num_time_steps = num_time_steps
 
         self._context_colnames = [f'p{i}' for i in range(num_context)]
