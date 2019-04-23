@@ -183,9 +183,14 @@ class ReplicationMetrics:
                          _reward_colname, _optimal_reward_colname,
                          _compute_time_colname]
 
-    def __init__(self, seed, num_time_steps, num_predictors):
+    def __init__(self, seed, num_time_steps, num_predictors, predictor_colnames=None):
         self.seed = seed
-        self.design_matrix = np.ndarray((num_time_steps, num_predictors))
+        if predictor_colnames is None:
+            self._predictor_colnames = [f'p{i}' for i in range(num_predictors)]
+        else:
+            self._predictor_colnames = predictor_colnames
+        self.design_matrix = pd.DataFrame(index=pd.Index(range(num_time_steps), name='time_step'),
+                                          columns=self._predictor_colnames, dtype=np.float)
 
         self.actions = np.ndarray(num_time_steps, dtype=np.uint)
         self.optimal_actions = np.ndarray(num_time_steps, dtype=np.uint)
@@ -226,7 +231,7 @@ class ReplicationMetrics:
 
     @property
     def predictor_colnames(self):
-        return [f'p{i}' for i in range(self.num_predictors)]
+        return self._predictor_colnames
 
     @property
     def colnames(self):
@@ -234,7 +239,7 @@ class ReplicationMetrics:
 
     def as_df(self):
         df = pd.DataFrame(index=pd.Index(np.arange(self.num_time_steps), name='time_step'),
-                          columns=self.colnames)
+                          columns=self.colnames, dtype=np.float)
         df.loc[:, self.predictor_colnames] = self.design_matrix
         df.loc[:, self._action_colname] = self.actions
         df.loc[:, self._optimal_action_colname] = self.optimal_actions
@@ -247,9 +252,10 @@ class ReplicationMetrics:
     def from_df(cls, df, seed=None):
         num_time_steps = df.shape[0]
         num_predictors = df.shape[1] - len(cls.metadata_colnames)
+        # TODO: get predictor colnames from DF to avoid losing them
         instance = cls(seed, num_time_steps, num_predictors)
 
-        instance.design_matrix[:] = df.loc[:, instance.predictor_colnames]
+        instance.design_matrix.loc[:] = df.loc[:, instance.predictor_colnames]
         instance.actions[:] = df[instance._action_colname]
         instance.optimal_actions[:] = df[instance._optimal_action_colname]
         instance.rewards[:] = df[instance._reward_colname]
@@ -452,23 +458,36 @@ class Experiment(Seedable):
         }
 
     def run(self, num_replications=1):
-        exp_metrics = ExperimentMetrics(self.metadata)
         rep_nums = np.arange(num_replications)
         with futures.ProcessPoolExecutor(max_workers=self.max_workers) as pool:
-            all_metrics = pool.map(self.run_once, rep_nums)
+            all_metrics = list(pool.map(self.run_once, rep_nums))
 
-        exp_metrics.add_replications(all_metrics)
+        num_failed = sum(m for m in all_metrics if m is None)
+        logger.info(f'{num_failed} of {num_replications} failed')
+
+        successful_replication_metrics = [m for m in all_metrics if m is not None]
+        exp_metrics = ExperimentMetrics(self.metadata)
+        exp_metrics.add_replications(successful_replication_metrics)
         return exp_metrics
 
     def run_once(self, seed):
         self.model.seed(seed)
         self.env.seed(seed)
+        replication_name = f'Replication_{seed}'
 
+        try:
+            self._unsafe_run_once(replication_name)
+        except Exception as exc:
+            logger.error(f'{replication_name} failed due to: {exc}')
+            return None
+
+        return self.env.metrics
+
+    def _unsafe_run_once(self, replication_name):
         obs = self.env.reset()
-
-        for t in range(self.num_time_steps):
-            if (t + 1) % self.logging_frequency == 0:
-                logger.info(f'Experiment_{seed} at t={t + 1}')
+        for t in range(1, self.num_time_steps + 1):
+            if t % self.logging_frequency == 0:
+                logger.info(f'{replication_name} at t={t}')
 
             try:
                 action = self.model.choose_arm(obs)
@@ -477,14 +496,13 @@ class Experiment(Seedable):
 
             obs, reward, done, info = self.env.step(action)
             if done:
-                logger.info(f"Replication finished after {t+1} timesteps")
-                break
-            else:
-                past_contexts = self.env.metrics.design_matrix[:t]
-                past_rewards = self.env.metrics.rewards[:t]
-                try:
-                    self.model.fit(past_contexts, past_rewards)
-                except InsufficientData as exc:
-                    logger.info(f'unable to fit model at time step {t} due to: {exc}')
+                logger.info(f"{replication_name} finished after {t} timesteps")
+                return
 
-        return self.env.metrics
+            past_contexts = self.env.metrics.design_matrix.iloc[:t]
+            past_rewards = self.env.metrics.rewards[:t]
+            try:
+                self.model.fit(past_contexts, past_rewards)
+            except InsufficientData as exc:
+                logger.info(f'In {replication_name} at time step {t}, '
+                            f'unable to fit model due to: {exc}')

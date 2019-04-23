@@ -27,7 +27,7 @@ class MetricsRecorder(gym.Wrapper):
 
         # Record outcomes for this step
         t = self._current_step  # will be 0 on first call to step
-        self.metrics.design_matrix[t] = self._last_observation.iloc[action]
+        self.metrics.design_matrix.iloc[t] = self._last_observation.iloc[action]
         self.metrics.time_per_decision[t] = time_for_decision
         self.metrics.actions[t] = action
         self.metrics.optimal_actions[t] = info.get('optimal_action', np.nan)
@@ -48,7 +48,8 @@ class MetricsRecorder(gym.Wrapper):
     def reset(self, **kwargs):
         self._last_observation = self.env.reset(**kwargs)
         self.metrics = ReplicationMetrics(
-            self.env.initial_seed, self.env.num_time_steps, self.env.num_predictors)
+            self.env.initial_seed, self.env.num_time_steps, self.env.num_predictors,
+            predictor_colnames=self._last_observation.columns)
         self.metrics.start = datetime.datetime.now()
 
         self._current_step = 0
@@ -69,7 +70,9 @@ class ContextualBanditEnv(Seedable, gym.Env):
         self.num_predictors = num_arms + num_context
         self.num_time_steps = num_time_steps
 
-        self._dummies = pd.get_dummies(range(self.num_arms))
+        self._context_colnames = [f'p{i}' for i in range(num_context)]
+        self._base_obs = pd.Series(range(num_arms), dtype='category').to_frame('arm')
+        self._last_observation = None
 
         self.action_space = gym.spaces.Discrete(self.num_arms)
         self.observation_space = gym.spaces.Box(
@@ -77,6 +80,9 @@ class ContextualBanditEnv(Seedable, gym.Env):
         self.reward_range = (0, 1)
 
         self._last_observation = None
+
+        # Use a fixed random seed for this part so environment is always the same
+        rng = np.random.RandomState(42)
 
         # Set up context distribution
         shared_variance = 0.5
@@ -87,22 +93,22 @@ class ContextualBanditEnv(Seedable, gym.Env):
 
         # All but one of the arms will have the same effects.
         effect_dist = stats.norm(-1, 0.5)
-        shared_effects = effect_dist.rvs(size=self.num_context, random_state=self.rng)
+        shared_effects = effect_dist.rvs(size=self.num_context, random_state=rng)
         self.arm_effects[:-1] = (np.tile(shared_effects, self.num_arms - 1)
-                                 .reshape(self.num_arms - 1, self.num_context))
+                                   .reshape(self.num_arms - 1, self.num_context))
 
         # The last one will have just slightly better effects.
         self.arm_effects[-1] = shared_effects + stats.truncnorm.rvs(
             0.4, 0.7, loc=0.5, scale=0.1,
-            size=self.num_context, random_state=self.rng)
+            size=self.num_context, random_state=rng)
 
     def _next_observation(self):
         context = self.context_dist.rvs(size=self.num_context, random_state=self.rng)
         self._last_context = pd.Series(context)
 
-        obs = self._dummies.copy()
-        for i in range(len(context)):
-            obs[f'{i}'] = context[i]
+        obs = self._base_obs.copy()
+        for i, name in enumerate(self._context_colnames):
+            obs[name] = context[i]
 
         self._last_observation = obs
         return self._last_observation

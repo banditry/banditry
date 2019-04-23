@@ -1,6 +1,10 @@
+import itertools
+
 import numpy as np
+import pandas as pd
 from scipy import optimize, stats
 from scipy import special as sps
+import patsy
 
 from cmabeval.base import Seedable, BaseModel, PGBaseModel
 from cmabeval.exceptions import NotFitted, InsufficientData
@@ -345,8 +349,15 @@ class IGGDist:
         group_masks = self.group_masks()
         a_t = self.a0 + 0.5 * np.array([np.sum(mask)
                                         for mask in group_masks])
-        b_t = 0.5 * np.array([np.sum(np.square(beta[mask]))
-                              for mask in group_masks])
+        beta_sum_squares = []
+        with np.errstate(all='raise'):
+            for mask in group_masks:
+                try:
+                    beta_sum_squares.append(np.sum(np.square(beta[mask])))
+                except FloatingPointError:
+                    beta_sum_squares.append(np.finfo(np.float).max)
+
+        b_t = 0.5 * np.array(beta_sum_squares)
         return a_t, b_t
 
 
@@ -360,7 +371,8 @@ created for each fit using the data passed during that fit.
 class LogisticRegressionIGG(MCMCLogisticRegression):
     """Bayesian logistic regression model with NIG prior, fitted with PG-augmented Gibbs."""
 
-    def __init__(self, mapping_type='pooled', a0=0.01, c0=0.01, d0=0.01, **kwargs):
+    def __init__(self, mapping_type='pooled', a0=0.01, c0=0.01, d0=0.01, interactions=False,
+                 **kwargs):
         """
         Args:
             mapping_type (str): specify which coefficients will be mapped together.
@@ -370,6 +382,7 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
             a0 (float): 1/2 prior sample size for effect variance.
             c0 (float): 1/2 prior sample size for effect variance scale.
             d0 (float): 1/2 prior sum of variance for effect variance scale.
+            interactions (bool): pass True to include 2nd-order interaction terms
         """
         super().__init__(**kwargs)
 
@@ -378,8 +391,10 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
         self.a0 = a0
         self.c0 = c0
         self.d0 = d0
+        self.interactions = interactions
 
         # Set up empty parameters
+        self._design_info = None
         self._mapping_ = None
         self.sigma_sq_hat_ = None
         self.b_hat_ = None
@@ -421,22 +436,33 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
         except NotFitted:
             return self.sample_from_prior(mapping)
 
-    def construct_coefficient_mapping(self, X):
-        num_predictors = X.shape[1]
+    def construct_coefficient_mapping(self, dmat, real_colnames):
+        num_predictors = dmat.shape[1]
         if self.mapping_type == 'pooled':
             return np.zeros(num_predictors, dtype=np.int)
         elif self.mapping_type == 'unpooled':
             return np.arange(num_predictors, dtype=np.int)
+        elif self.mapping_type == 'by_type':
+            # prior for each data type
+            named_terms = {name: term for name, term in
+                           zip(dmat.design_info.term_names, dmat.design_info.terms)}
+            column_indices = np.arange(dmat.shape[1])
+            real_indices = np.array(sorted(itertools.chain.from_iterable(
+                column_indices[dmat.design_info.term_slices[named_terms[name]]]
+                for name in real_colnames)))
+            mapping = np.zeros(dmat.shape[1], dtype=np.int)
+            mapping[real_indices] = 1
+            return mapping
         elif self.mapping_type == 'by_order':
             raise ValueError("mapping_type='by_order' not currently supported")
         else:
             raise ValueError(f"unrecognized mapping_type {self.mapping_type}")
 
-    def fit(self, X, y):
+    def fit(self, df, y):
         """Fit the model using Gibbs sampler.
 
         Args:
-            X (np.ndarray): design matrix
+            df (pd.DataFrame): design matrix
             y (np.ndarray): responses (binary rewards)
 
         Returns:
@@ -446,15 +472,37 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
             if the hyperparameters haven't been set. The first time, they'll be set
             from the data, and the next time, those values will be re-used.
         """
-        num_predictors = X.shape[1]
-        self._mapping_ = self.construct_coefficient_mapping(X)
+        # TODO: clean up this design matrix handling and prior mapping
+        real_colnames = list(sorted(df.select_dtypes(['int', 'float']).columns))
+        if df.shape[0] > 1:
+            real_factors = [f'standardize({name})' for name in real_colnames]
+        else:
+            real_factors = real_colnames
+
+        cat_factors = list(sorted(set(df.columns) - set(real_colnames)))
+        all_factors = cat_factors + real_factors
+        factors = ['0'] + all_factors
+
+        # TODO: scale interaction terms involving reals
+        if self.interactions:
+            # Interact all covariates; use un-standardized reals
+            factors += [f'{f1}:{f2}'
+                        for f1, f2, in itertools.product(real_colnames + cat_factors)]
+
+        patsy_formula = ' + '.join(factors)
+        dmat = patsy.dmatrix(patsy_formula, df)
+        self._design_info = dmat.design_info
+
+        self._mapping_ = self.construct_coefficient_mapping(dmat, real_colnames)
         prior = self.get_prior()
+        X = dmat
 
         # Precompute some values that will be re-used in loops
         kappas = (y - 0.5).T
         XTkappa = X.T.dot(kappas)
 
         # Init memory for parameter traces
+        num_predictors = X.shape[1]
         b_hat = np.ndarray((self.num_samples + 1, prior.num_groups))
         sigma_sq_hat = np.ndarray((self.num_samples + 1, prior.num_groups))
         beta_hat = np.ndarray((self.num_samples + 1, num_predictors))
@@ -470,7 +518,8 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
             Lambda = np.diag(1 / sigma_sq_hat[s - 1][self._mapping_])
             try:
                 # TODO: speed this up by computing inverse via Cholesky decomposition
-                V_omega = np.linalg.inv((X.T * omegas).dot(X) + Lambda)
+                V_omega_inv = (X.T * omegas).dot(X) + Lambda
+                V_omega = np.linalg.inv(V_omega_inv)
             except np.linalg.LinAlgError as err:
                 raise InsufficientData(err)
 
@@ -488,6 +537,21 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
         self.beta_hat_ = beta_hat[1:]
 
         return self
+
+    def choose_arm(self, context):
+        if not self._design_info:
+            raise NotFitted
+
+        beta_hat = self.last_beta_sample()
+        preprocessed_context = patsy.build_design_matrices([self._design_info], context)[0]
+
+        # Compute logits and then transform to rates
+        logits = preprocessed_context.dot(beta_hat)
+        rates = sps.expit(logits)
+
+        # Choose best arm for this "plausible model."
+        # Break ties randomly.
+        return self.rng.choice(np.flatnonzero(rates == rates.max()))
 
 
 # This is the form from Bishop's PRML (p. 218)
