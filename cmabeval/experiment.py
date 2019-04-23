@@ -188,7 +188,7 @@ class ReplicationMetrics:
         if predictor_colnames is None:
             self._predictor_colnames = [f'p{i}' for i in range(num_predictors)]
         else:
-            self._predictor_colnames = predictor_colnames
+            self._predictor_colnames = list(predictor_colnames)
         self.design_matrix = pd.DataFrame(index=pd.Index(range(num_time_steps), name='time_step'),
                                           columns=self._predictor_colnames, dtype=np.float)
 
@@ -252,8 +252,13 @@ class ReplicationMetrics:
     def from_df(cls, df, seed=None):
         num_time_steps = df.shape[0]
         num_predictors = df.shape[1] - len(cls.metadata_colnames)
-        # TODO: get predictor colnames from DF to avoid losing them
-        instance = cls(seed, num_time_steps, num_predictors)
+
+        # get predictor colnames from DF to avoid losing them
+        colnames = list(df.columns)
+        for name in cls.metadata_colnames:
+            colnames.remove(name)
+
+        instance = cls(seed, num_time_steps, num_predictors, predictor_colnames=colnames)
 
         instance.design_matrix.loc[:] = df.loc[:, instance.predictor_colnames]
         instance.actions[:] = df[instance._action_colname]
@@ -355,7 +360,8 @@ class ExperimentMetrics:
         if not self.replications:
             raise ValueError('There are no replications to save')
 
-        logger.info(f'Saving {len(self.replications)} to {dirpath}')  # TODO: better top-level log
+        # TODO: better top-level log
+        logger.info(f'Saving {len(self.replications)} replications to {dirpath}')
         os.makedirs(dirpath)
 
         replications_path = os.path.join(dirpath, 'replications')
@@ -380,7 +386,7 @@ class ExperimentMetrics:
         index_fpath = os.path.join(dirpath, 'index.json')
         logger.info(f'writing index.json to {index_fpath}')
         with open(index_fpath, 'w') as f:
-            json.dump(index, f, cls=serialize.NumpyEncoder)
+            json.dump(index, f, indent=4, cls=serialize.NumpyEncoder)
 
         return replication_metadata
 
