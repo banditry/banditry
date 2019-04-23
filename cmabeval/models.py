@@ -124,7 +124,7 @@ class LogisticRegression(MCMCLogisticRegression):
             self: reference to fitted model object (this instance).
         """
         preprocessor = Preprocessor(self.interactions)
-        X = dmat = preprocessor.fit_transform(df)
+        X = preprocessor.fit_transform(df)
 
         # Precompute some values that will be re-used in loops
         P0_inv = np.linalg.inv(self.P0)
