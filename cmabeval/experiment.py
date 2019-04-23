@@ -390,7 +390,7 @@ class ExperimentMetrics:
 
         replications_path = os.path.join(dirpath, 'replications')
         logger.info(f'writing {len(self.replications)} to {replications_path}')
-        with futures.ProcessPoolExecutor() as pool:
+        with futures.ThreadPoolExecutor() as pool:
             submitted = []
             for metrics, path in zip(self.replications.values(), paths):
                 submitted.append(pool.submit(metrics.save, path))
@@ -421,7 +421,7 @@ class ExperimentMetrics:
         logger.info(f'loading {len(metrics_paths)} metrics from {replications_path}')
 
         meta_map = {m['seed']: m for m in replication_meta}
-        with futures.ProcessPoolExecutor() as pool:
+        with futures.ThreadPoolExecutor() as pool:
             all_metrics = pool.map(ReplicationMetrics.load, metrics_paths)
             for metrics, path in zip(all_metrics, metrics_paths):
                 meta = meta_map[metrics.seed]
