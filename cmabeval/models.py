@@ -502,7 +502,6 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
 
         patsy_formula = ' + '.join(factors)
         dmat = patsy.dmatrix(patsy_formula, df)
-        self._design_info = dmat.design_info
 
         self._mapping_ = self.construct_coefficient_mapping(dmat, real_colnames)
         prior = self.get_prior()
@@ -525,14 +524,42 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
         gammas = self.rng.normal(0, 1, size=(self.num_samples, num_predictors))
         for s in range(1, self.num_samples + 1):
             # Draw beta
-            Lambda = np.diag(1 / sigma_sq_hat[s - 1][self._mapping_])
             omegas = draw_omegas(X, beta_hat[s - 1], self.pg_rng)
-            V_omega_inv = (X.T * omegas).dot(X) + Lambda
 
+            V_omega_inv = (X.T * omegas).dot(X)  # augmented scatter matrix
+            Lambda_diag = 1 / sigma_sq_hat[s - 1][self._mapping_]
+            np.fill_diagonal(V_omega_inv, np.diag(V_omega_inv) + Lambda_diag)  # add in Lambda
+
+            post_dist = None
             try:
                 L = sp.linalg.cholesky(V_omega_inv, lower=True)
-            except sp.linalg.LinAlgError as err:  # V_omega_inv not positive semi-definite
-                raise InsufficientData(err)
+            except sp.linalg.LinAlgError:
+                try:
+                    if post_dist is None:
+                        raise
+
+                    logger.debug(f'V_omega_inv not positive semi-definite for sample {s}; '
+                                 'attempting to resample last sample hyperparams to resolve')
+
+                    # Re-use previous computation of augmented scatter matrix
+                    # by first subtracting out contribution from sampled variance.
+                    np.fill_diagonal(V_omega_inv, np.diag(V_omega_inv) - Lambda_diag)
+                    b_hat[s - 1], sigma_sq_hat[s - 1] = post_dist.rvs(rng=self.rng)
+
+                    # Now add in contribution from new sample
+                    Lambda_diag = 1 / sigma_sq_hat[s - 1][self._mapping_]
+                    np.fill_diagonal(V_omega_inv, np.diag(V_omega_inv) + Lambda_diag)
+
+                    # Attempt Cholesky again
+                    L = sp.linalg.cholesky(V_omega_inv, lower=True)
+                except sp.linalg.LinAlgError:  # resample failed
+                    logger.debug(f'resample failed for sample {s}; '
+                                 'adding machine epsilon to diagonal to attempt to resolve')
+                    try:
+                        adjustment = np.eye(num_predictors) * np.finfo(np.float).eps
+                        L = sp.linalg.cholesky(V_omega_inv + adjustment, lower=True)
+                    except sp.linalg.LinAlgError as err:  # adjustment failed
+                        raise InsufficientData(err)
 
             # Solve system of equations to sample beta from multivariate normal
             eta = sp.linalg.solve_triangular(L, y_omega, lower=True)
@@ -548,6 +575,9 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
         self.sigma_sq_hat_ = sigma_sq_hat[1:]
         self.b_hat_ = b_hat[1:]
         self.beta_hat_ = beta_hat[1:]
+
+        # Store design info for transforms
+        self._design_info = dmat.design_info
 
         return self
 
