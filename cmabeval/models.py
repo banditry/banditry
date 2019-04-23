@@ -1,13 +1,17 @@
+import logging
 import itertools
 
 import numpy as np
 import pandas as pd
+import scipy as sp
 from scipy import optimize, stats
 from scipy import special as sps
 import patsy
 
 from cmabeval.base import Seedable, BaseModel, PGBaseModel
 from cmabeval.exceptions import NotFitted, InsufficientData
+
+logger = logging.getLogger(__name__)
 
 
 def draw_omegas(design_matrix, theta, pg_rng):
@@ -120,6 +124,7 @@ class LogisticRegression(MCMCLogisticRegression):
         P0_inv_m0 = P0_inv.dot(self.m0)
         kappas = (y - 0.5).T
         XTkappa = X.T.dot(kappas)
+        y_omega = XTkappa + P0_inv_m0
         num_predictors = X.shape[1]
 
         # Init memory for parameter traces
@@ -128,17 +133,23 @@ class LogisticRegression(MCMCLogisticRegression):
         # Init trace from prior
         beta_hat[0] = self.sample_from_prior()
 
+        gammas = self.rng.normal(0, 1, size=(self.num_samples, num_predictors))
+        for s in range(1, self.num_samples + 1):
+            omegas = draw_omegas(X, beta_hat[s - 1], self.pg_rng)
+            V_omega_inv = (X.T * omegas).dot(X) + P0_inv
+
+            try:
+                L = sp.linalg.cholesky(V_omega_inv, lower=True)
+            except sp.linalg.LinAlgError as err:  # V_omega_inv not positive semi-definite
+                raise InsufficientData(err)
+
+            # Solve system of equations to sample beta from multivariate normal
+            eta = sp.linalg.solve_triangular(L, y_omega, lower=True)
+            beta_hat[s] = sp.linalg.solve_triangular(
+                L, eta + gammas[s - 1], lower=True, trans='T')
+
         # Set fitted parameters on instance
         self.beta_hat_ = beta_hat[1:]  # discard initial sample from prior
-
-        for i in range(1, self.num_samples + 1):
-            omegas = draw_omegas(X, beta_hat[i - 1], self.pg_rng)
-
-            # TODO: speed this up by computing inverse via Cholesky decomposition
-            V_omega = np.linalg.inv((X.T * omegas).dot(X) + P0_inv)
-            m_omega = V_omega.dot(XTkappa + P0_inv_m0)
-
-            beta_hat[i] = self.rng.multivariate_normal(m_omega, V_omega)
 
         return self
 
@@ -499,7 +510,7 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
 
         # Precompute some values that will be re-used in loops
         kappas = (y - 0.5).T
-        XTkappa = X.T.dot(kappas)
+        y_omega = X.T.dot(kappas)
 
         # Init memory for parameter traces
         num_predictors = X.shape[1]
@@ -510,21 +521,23 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
         # Init traces from priors
         b_hat[0], sigma_sq_hat[0], beta_hat[0] = self.last_sample()
 
+        # Pre-draw random variables for multivariate normal sampling for efficiency
+        gammas = self.rng.normal(0, 1, size=(self.num_samples, num_predictors))
         for s in range(1, self.num_samples + 1):
-            omegas = draw_omegas(X, beta_hat[s - 1], self.pg_rng)
-            # z = kappas / omegas  # TODO: handle zero-division
-
-            # Draw betas
+            # Draw beta
             Lambda = np.diag(1 / sigma_sq_hat[s - 1][self._mapping_])
+            omegas = draw_omegas(X, beta_hat[s - 1], self.pg_rng)
+            V_omega_inv = (X.T * omegas).dot(X) + Lambda
+
             try:
-                # TODO: speed this up by computing inverse via Cholesky decomposition
-                V_omega_inv = (X.T * omegas).dot(X) + Lambda
-                V_omega = np.linalg.inv(V_omega_inv)
-            except np.linalg.LinAlgError as err:
+                L = sp.linalg.cholesky(V_omega_inv, lower=True)
+            except sp.linalg.LinAlgError as err:  # V_omega_inv not positive semi-definite
                 raise InsufficientData(err)
 
-            m_omega = V_omega.dot(XTkappa)
-            beta_hat[s] = self.rng.multivariate_normal(m_omega, V_omega)
+            # Solve system of equations to sample beta from multivariate normal
+            eta = sp.linalg.solve_triangular(L, y_omega, lower=True)
+            beta_hat[s] = sp.linalg.solve_triangular(
+                L, eta + gammas[s - 1], lower=True, trans='T')
 
             # Draw b and sigma_sq
             post_dist = prior.update(sigma_sq_hat[s - 1], beta_hat[s])
