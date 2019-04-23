@@ -479,6 +479,7 @@ class Experiment(Seedable):
             self._unsafe_run_once(replication_name)
         except Exception as exc:
             logger.error(f'{replication_name} failed due to: {exc}')
+            logger.exception(exc)
             return None
 
         return self.env.metrics

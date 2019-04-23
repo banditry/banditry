@@ -50,6 +50,10 @@ class MetricsRecorder(gym.Wrapper):
         self.metrics = ReplicationMetrics(
             self.env.initial_seed, self.env.num_time_steps, self.env.num_predictors,
             predictor_colnames=self._last_observation.columns)
+        dtypes = {colname: self._last_observation[colname].dtype
+                  for colname in self._last_observation.columns}
+        self.metrics.design_matrix = self.metrics.design_matrix.astype(dtypes)
+
         self.metrics.start = datetime.datetime.now()
 
         self._current_step = 0
