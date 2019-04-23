@@ -329,7 +329,7 @@ class ExperimentMetrics:
         return self.replications[seed]
 
     def __iter__(self):
-        return self.replications.values()
+        return iter(self.replications.values())
 
     def add_replication(self, metrics):
         self.replications[metrics.seed] = metrics
@@ -462,7 +462,7 @@ class Experiment(Seedable):
         with futures.ProcessPoolExecutor(max_workers=self.max_workers) as pool:
             all_metrics = list(pool.map(self.run_once, rep_nums))
 
-        num_failed = sum(m for m in all_metrics if m is None)
+        num_failed = sum(1 for m in all_metrics if m is None)
         logger.info(f'{num_failed} of {num_replications} failed')
 
         successful_replication_metrics = [m for m in all_metrics if m is not None]
