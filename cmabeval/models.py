@@ -6,10 +6,10 @@ import pandas as pd
 import scipy as sp
 from scipy import optimize, stats
 from scipy import special as sps
-import patsy
 
 from cmabeval.base import Seedable, BaseModel, PGBaseModel
 from cmabeval.exceptions import NotFitted, InsufficientData
+from cmabeval.transformers import Preprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,8 @@ class MCMCLogisticRegression(PGBaseModel):
         self.beta_hat_ = None
 
     def iter_params(self):
-        return ((name, value if value is None else value[self.num_burnin:])
+        return ((name, (value if value is None or not hasattr(value, '__getitem__')
+                        else value[self.num_burnin:]))
                 for name, value in self.__dict__.items()
                 if name.endswith('_'))
 
@@ -405,7 +406,7 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
         self.interactions = interactions
 
         # Set up empty parameters
-        self._design_info = None
+        self.preprocessor_ = None
         self._mapping_ = None
         self.sigma_sq_hat_ = None
         self.b_hat_ = None
@@ -483,29 +484,12 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
             if the hyperparameters haven't been set. The first time, they'll be set
             from the data, and the next time, those values will be re-used.
         """
-        # TODO: clean up this design matrix handling and prior mapping
+        preprocessor = Preprocessor(self.interactions)
+        X = dmat = preprocessor.fit_transform(df)
+
         real_colnames = list(sorted(df.select_dtypes(['int', 'float']).columns))
-        if df.shape[0] > 1:
-            real_factors = [f'standardize({name})' for name in real_colnames]
-        else:
-            real_factors = real_colnames
-
-        cat_factors = list(sorted(set(df.columns) - set(real_colnames)))
-        all_factors = cat_factors + real_factors
-        factors = ['0'] + all_factors
-
-        # TODO: scale interaction terms involving reals
-        if self.interactions:
-            # Interact all covariates; use un-standardized reals
-            factors += [f'{f1}:{f2}'
-                        for f1, f2, in itertools.product(real_colnames + cat_factors)]
-
-        patsy_formula = ' + '.join(factors)
-        dmat = patsy.dmatrix(patsy_formula, df)
-
         self._mapping_ = self.construct_coefficient_mapping(dmat, real_colnames)
         prior = self.get_prior()
-        X = dmat
 
         # Precompute some values that will be re-used in loops
         kappas = (y - 0.5).T
@@ -576,24 +560,21 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
         self.b_hat_ = b_hat[1:]
         self.beta_hat_ = beta_hat[1:]
 
-        # Store design info for transforms
-        self._design_info = dmat.design_info
+        # Store transformer for use in transform
+        self.preprocessor_ = preprocessor
 
         return self
 
     def choose_arm(self, context):
-        if not self._design_info:
-            raise NotFitted
-
+        self.raise_if_not_fitted()
+        preprocessed_context = self.preprocessor_.transform(context)
         beta_hat = self.last_beta_sample()
-        preprocessed_context = patsy.build_design_matrices([self._design_info], context)[0]
 
         # Compute logits and then transform to rates
         logits = preprocessed_context.dot(beta_hat)
         rates = sps.expit(logits)
 
-        # Choose best arm for this "plausible model."
-        # Break ties randomly.
+        # Choose best arm for this "plausible model." Break ties randomly.
         return self.rng.choice(np.flatnonzero(rates == rates.max()))
 
 
