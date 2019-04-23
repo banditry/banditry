@@ -61,6 +61,16 @@ class MetricsRecorder(gym.Wrapper):
         return self._last_observation
 
 
+class SeedableDiscrete(gym.spaces.Discrete, Seedable):
+
+    def __init__(self, n, **kwargs):
+        gym.spaces.Discrete.__init__(self, n)
+        Seedable.__init__(self, **kwargs)
+
+    def sample(self):
+        return self.rng.randint(self.n)
+
+
 class ContextualBanditEnv(Seedable, gym.Env):
 
     def render(self, mode='human'):
@@ -78,7 +88,7 @@ class ContextualBanditEnv(Seedable, gym.Env):
         self._base_obs = pd.Series(range(num_arms), dtype='category').to_frame('arm')
         self._last_observation = None
 
-        self.action_space = gym.spaces.Discrete(self.num_arms)
+        self.action_space = SeedableDiscrete(self.num_arms)
         self.observation_space = gym.spaces.Box(
             low=0, high=np.inf, shape=(self.num_predictors,), dtype=np.float)
         self.reward_range = (0, 1)
@@ -119,6 +129,7 @@ class ContextualBanditEnv(Seedable, gym.Env):
 
     def reset(self, **kwargs):
         Seedable.reset(self)
+        self.action_space.reset()
         return self._next_observation()
 
     def step(self, action):
