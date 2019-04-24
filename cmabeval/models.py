@@ -12,14 +12,19 @@ from cmabeval.exceptions import NotFitted, InsufficientData
 from cmabeval.transformers import Preprocessor
 
 logger = logging.getLogger(__name__)
+MAX_FLOAT = np.finfo(np.float).max
 
 
 def draw_omegas(design_matrix, theta, pg_rng):
+    """In some cases, pg_rng.drawv was returning nan values."""
+    # Dot product doesn't warn on overflow or underflow, so handle those cases.
+    logits = design_matrix.dot(theta)
+    logits[np.isneginf(logits)] = 0  # underflow
+    logits[np.isposinf(logits)] = MAX_FLOAT  # overflow
+
     num_rows = design_matrix.shape[0]
     omegas = np.ndarray(num_rows)
-    logits = design_matrix.dot(theta)
-    for i, logit_i in enumerate(logits):
-        omegas[i] = pg_rng.pgdraw(1, logit_i)
+    pg_rng.pgdrawv(np.ones(num_rows), logits, omegas)
 
     return omegas
 
@@ -123,6 +128,7 @@ class LogisticRegression(MCMCLogisticRegression):
         Returns:
             self: reference to fitted model object (this instance).
         """
+        # TODO: update models to use something like scikit pipeline to abstract preprocessing
         preprocessor = Preprocessor(self.interactions)
         X = preprocessor.fit_transform(df)
 
@@ -503,6 +509,7 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
             if the hyperparameters haven't been set. The first time, they'll be set
             from the data, and the next time, those values will be re-used.
         """
+        # TODO: update models to use something like scikit pipeline to abstract preprocessing
         preprocessor = Preprocessor(self.interactions)
         X = dmat = preprocessor.fit_transform(df)
 
@@ -536,6 +543,9 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
             post_dist = None
             try:
                 L = sp.linalg.cholesky(V_omega_inv, lower=True)
+            # except ValueError:
+            #     import pdb; pdb.set_trace()
+            #     raise
             except sp.linalg.LinAlgError:
                 try:
                     if post_dist is None:

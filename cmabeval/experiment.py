@@ -513,3 +513,7 @@ class Experiment(Seedable):
             except InsufficientData as exc:
                 logger.info(f'In {replication_name} at time step {t}, '
                             f'unable to fit model due to: {exc}')
+            except Exception:
+                logger.error(f'model fitting failed at time step {t}, '
+                             f'unexpected exception')
+                raise
