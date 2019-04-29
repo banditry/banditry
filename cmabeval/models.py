@@ -473,23 +473,14 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
         except NotFitted:
             return self.sample_from_prior(mapping)
 
-    def construct_coefficient_mapping(self, dmat, real_colnames):
+    def construct_coefficient_mapping(self, dmat):
         num_predictors = dmat.shape[1]
         if self.mapping_type == 'pooled':
             return np.zeros(num_predictors, dtype=np.int)
         elif self.mapping_type == 'unpooled':
             return np.arange(num_predictors, dtype=np.int)
         elif self.mapping_type == 'by_type':
-            # prior for each data type
-            named_terms = {name: term for name, term in
-                           zip(dmat.design_info.term_names, dmat.design_info.terms)}
-            column_indices = np.arange(dmat.shape[1])
-            real_indices = np.array(sorted(itertools.chain.from_iterable(
-                column_indices[dmat.design_info.term_slices[named_terms[name]]]
-                for name in real_colnames)))
-            mapping = np.zeros(dmat.shape[1], dtype=np.int)
-            mapping[real_indices] = 1
-            return mapping
+            return build_by_type_mapping(dmat)
         elif self.mapping_type == 'by_order':
             raise ValueError("mapping_type='by_order' not currently supported")
         else:
@@ -513,8 +504,7 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
         preprocessor = Preprocessor(self.interactions)
         X = dmat = preprocessor.fit_transform(df)
 
-        real_colnames = list(sorted(df.select_dtypes(['int', 'float']).columns))
-        self._mapping_ = self.construct_coefficient_mapping(dmat, real_colnames)
+        self._mapping_ = self.construct_coefficient_mapping(dmat)
         prior = self.get_prior()
 
         # Precompute some values that will be re-used in loops
@@ -605,6 +595,27 @@ class LogisticRegressionIGG(MCMCLogisticRegression):
 
         # Choose best arm for this "plausible model." Break ties randomly.
         return self.rng.choice(np.flatnonzero(rates == rates.max()))
+
+
+def build_by_type_mapping(dmat):
+    dinfo = dmat.design_info
+
+    # Type info is stored in factors; extract that and filter to reals
+    named_factors = ((name, term, dinfo.factor_infos[term.factors[0]])
+                     for name, term in zip(dinfo.term_names, dinfo.terms))
+    reals_terms = (term for name, term, factor
+                   in named_factors if factor.type == 'numerical')
+
+    # Column indices are stored in term_slices; extract indices of reals
+    column_indices = np.arange(dmat.shape[1])
+    real_indices = np.array(sorted(itertools.chain.from_iterable(
+        column_indices[dinfo.term_slices[term]]
+        for term in reals_terms)))
+
+    # Map categoricals to first group and reals to second
+    mapping = np.zeros(dmat.shape[1], dtype=np.int)
+    mapping[real_indices] = 1
+    return mapping
 
 
 # This is the form from Bishop's PRML (p. 218)
