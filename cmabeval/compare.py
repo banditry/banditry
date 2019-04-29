@@ -1,6 +1,8 @@
+import numpy as np
 import pymc3 as pm
 
 from cmabeval.base import HasFittableParams
+from cmabeval.experiment import ExperimentMetrics
 
 
 class BESTPairedT(HasFittableParams):
@@ -29,3 +31,50 @@ class BESTPairedT(HasFittableParams):
         kwargs.setdefault('text_size', 14)
         return pm.plot_posterior(
             self.trace_, varnames=['group_mean'], **kwargs)
+
+
+class Comparator:
+    """Compare two methods via statistical test on ExperimentMetrics."""
+
+    def __init__(self, champion_metrics, challenger_metrics):
+        """
+        Args:
+            champion_metrics (cmabeval.experiment.ExperimentMetrics)
+            challenger_metrics (cmabeval.experiment.ExperimentMetrics)
+        """
+        self.champion = champion_metrics
+        self.challenger = challenger_metrics
+
+    @classmethod
+    def load(cls, champion_dirpath, challenger_dirpath):
+        champion = ExperimentMetrics.load(champion_dirpath)
+        challenger = ExperimentMetrics.load(challenger_dirpath)
+        return cls(champion, challenger)
+
+    def compare_rewards(self):
+        return self._compare('rewards')
+
+    def compare_decision_time(self):
+        return self._compare('time_per_decision')
+
+    def _compare(self, metric_name):
+        avg_diffs = self._compute_avg_diffs(metric_name)
+
+        tester = BESTPairedT().fit(avg_diffs)
+        tester.plot()
+        return tester
+
+    def _compute_avg_diffs(self, metric_name):
+        common_seeds = self._common_seeds()
+        num_replications = len(common_seeds)
+        avg_diff = np.ndarray((num_replications,))
+        for i, seed in enumerate(common_seeds):
+            m1 = self.champion[seed]
+            m2 = self.challenger[seed]
+            avg_diff[i] = (np.sum(getattr(m1, metric_name)) / m1.num_time_steps -
+                           np.sum(getattr(m2, metric_name)) / m2.num_time_steps)
+        return avg_diff
+
+    def _common_seeds(self):
+        return tuple(sorted(set(self.champion.replications.keys()) &
+                            set(self.challenger.replications.keys())))
