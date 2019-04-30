@@ -10,6 +10,21 @@ from cmabeval.base import Seedable
 from cmabeval.experiment import ReplicationMetrics
 
 
+def register_env(env, num_arms, num_context, num_time_steps=1000,
+                 num_replications=100, version=0, seed=42):
+    env_name = (f'CMAB1Best{env.__name__}'
+                f'N{num_arms}C{num_context}T{num_time_steps}-v{version}')
+    gym.envs.registry.env_specs.pop(env_name, None)
+    gym.envs.register(
+        env_name,
+        trials=num_replications, max_episode_steps=num_time_steps,
+        entry_point=env, kwargs=dict(
+            num_arms=num_arms, num_context=num_context,
+            num_time_steps=num_time_steps, seed=seed))
+
+    return env_name
+
+
 class MetricsRecorder(gym.Wrapper):
     """Record metrics from an agent interacting with the wrapped environment."""
 
@@ -88,33 +103,32 @@ class ContextualBanditEnv(Seedable, gym.Env):
         self._base_obs = pd.Series(range(num_arms), dtype='category').to_frame('arm')
         self._last_observation = None
 
-        self.action_space = SeedableDiscrete(self.num_arms)
-        self.observation_space = gym.spaces.Box(
-            low=0, high=np.inf, shape=(self.num_predictors,), dtype=np.float)
         self.reward_range = (0, 1)
+        self.action_space = SeedableDiscrete(self.num_arms)
+        self.observation_space = self.create_observation_space()
 
         self._last_observation = None
 
         # Use a fixed random seed for this part so environment is always the same
         rng = np.random.RandomState(42)
+        self.context_dist = self.create_context_dist(rng)
+        self.interaction_effects = self.create_interaction_effects(rng)
+        self.arm_effects = self.create_arm_effects(rng)
 
-        # Set up context distribution
-        shared_variance = 0.5
-        self.context_dist = stats.truncnorm(0, 10, loc=0, scale=shared_variance)
+    def create_observation_space(self):
+        # TODO: fix bounds on this so `sample` actually stays in bounds
+        # Also, make it seedable like the action space for repeatability
+        return gym.spaces.Box(
+            low=0, high=np.inf, shape=(self.num_predictors,), dtype=np.float)
 
-        # Set up arm effects.
-        self.arm_effects = np.ndarray((self.num_arms, self.num_context))
+    def create_context_dist(self, rng):
+        return stats.truncnorm(0, 10, loc=0, scale=0.5)
 
-        # All but one of the arms will have the same effects.
-        effect_dist = stats.norm(-1, 0.5)
-        shared_effects = effect_dist.rvs(size=self.num_context, random_state=rng)
-        self.arm_effects[:-1] = (np.tile(shared_effects, self.num_arms - 1)
-                                   .reshape(self.num_arms - 1, self.num_context))
+    def create_interaction_effects(self, rng):
+        return np.zeros((self.num_arms, self.num_context))
 
-        # The last one will have just slightly better effects.
-        self.arm_effects[-1] = shared_effects + stats.truncnorm.rvs(
-            0.4, 0.7, loc=0.5, scale=0.1,
-            size=self.num_context, random_state=rng)
+    def create_arm_effects(self, rng):
+        return np.zeros(self.num_arms)
 
     def _next_observation(self):
         context = self.context_dist.rvs(size=self.num_context, random_state=self.rng)
@@ -133,11 +147,14 @@ class ContextualBanditEnv(Seedable, gym.Env):
         return self._next_observation()
 
     def step(self, action):
-        rates = special.expit(self.arm_effects.dot(self._last_context))
+        logits = (self.arm_effects[action] +
+                  self.interaction_effects.dot(self._last_context))
+        rates = special.expit(logits)
         rewards = self.rng.binomial(n=1, p=rates)
+
+        actual_reward = rewards[action]
         optimal_action = rates.argmax()
         optimal_reward = rewards[optimal_action]
-        actual_reward = rewards[action]
 
         info = dict(optimal_action=optimal_action,
                     optimal_reward=optimal_reward)
@@ -145,3 +162,48 @@ class ContextualBanditEnv(Seedable, gym.Env):
 
         done = False  # will be handled by wrapper
         return next_observation, actual_reward, done, info
+
+
+class OnlyInteractionEffects(ContextualBanditEnv):
+
+    def create_interaction_effects(self, rng):
+        effects = np.ndarray((self.num_arms, self.num_context))
+        effect_dist = stats.norm(-1, 0.5)
+
+        shared_effects = effect_dist.rvs(size=self.num_context, random_state=rng)
+        effects[:-1] = (np.tile(shared_effects, self.num_arms - 1)
+                        .reshape(self.num_arms - 1, self.num_context))
+
+        # The last one will have just slightly better effects.
+        effects[-1] = shared_effects + stats.truncnorm.rvs(
+            0.4, 0.7, loc=0.5, scale=0.1,
+            size=self.num_context, random_state=rng)
+
+        return effects
+
+
+class OnlyArmEffects(ContextualBanditEnv):
+
+    def create_arm_effects(self, rng):
+        return np.linspace(-4, -2, num=self.num_arms)
+
+
+class ArmAndInteractionEffects(ContextualBanditEnv):
+
+    def create_arm_effects(self, rng):
+        return np.linspace(-2, -4, num=self.num_arms)
+
+    def create_interaction_effects(self, rng):
+        effects = np.ndarray((self.num_arms, self.num_context))
+        effect_dist = stats.norm(-1, 0.5)
+
+        shared_effects = effect_dist.rvs(size=self.num_context, random_state=rng)
+        effects[:-1] = (np.tile(shared_effects, self.num_arms - 1)
+                        .reshape(self.num_arms - 1, self.num_context))
+
+        # The last one will have just slightly better effects.
+        effects[-1] = shared_effects + stats.truncnorm.rvs(
+            0.4, 0.7, loc=0.5, scale=0.1,
+            size=self.num_context, random_state=rng)
+
+        return effects

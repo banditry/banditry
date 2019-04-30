@@ -58,13 +58,13 @@ class Comparator:
         return self._compare('time_per_decision')
 
     def _compare(self, metric_name):
-        avg_diffs = self._compute_avg_diffs(metric_name)
+        avg_diffs = self.compute_avg_diffs(metric_name)
 
         tester = BESTPairedT().fit(avg_diffs)
         tester.plot()
         return tester
 
-    def _compute_avg_diffs(self, metric_name):
+    def compute_avg_diffs(self, metric_name):
         common_seeds = self._common_seeds()
         num_replications = len(common_seeds)
         avg_diff = np.ndarray((num_replications,))
@@ -78,3 +78,27 @@ class Comparator:
     def _common_seeds(self):
         return tuple(sorted(set(self.champion.replications.keys()) &
                             set(self.challenger.replications.keys())))
+
+
+class MethodComparator:
+    """Compare methods across experiments."""
+
+    def __init__(self, comparators):
+        self.comparators = comparators
+
+    def compare_rewards(self):
+        return self._compare('rewards')
+
+    def compare_decision_time(self):
+        return self._compare('time_per_decision')
+
+    def _compare(self, metric_name):
+        avg_diffs = self.compute_avg_diffs(metric_name)
+
+        tester = BESTPairedT().fit(avg_diffs)
+        tester.plot()
+        return tester
+
+    def compute_avg_diffs(self, metric_name):
+        return np.concatenate([comp.compute_avg_diffs(metric_name)
+                               for comp in self.comparators])
