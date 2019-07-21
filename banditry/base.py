@@ -4,7 +4,7 @@ import itertools
 import numpy as np
 from pypolyagamma.pypolyagamma import PyPolyaGamma
 
-from cmabeval.exceptions import NotFitted
+from banditry.exceptions import NotFitted
 
 
 def get_parents_with_hyperparams(klass):

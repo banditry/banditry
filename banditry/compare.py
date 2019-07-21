@@ -1,8 +1,8 @@
 import numpy as np
 import pymc3 as pm
 
-from cmabeval.base import HasFittableParams
-from cmabeval.experiment import ExperimentMetrics
+from banditry.base import HasFittableParams
+from banditry.experiment import ExperimentMetrics
 
 
 class BESTPairedT(HasFittableParams):
@@ -39,8 +39,8 @@ class Comparator:
     def __init__(self, champion_metrics, challenger_metrics):
         """
         Args:
-            champion_metrics (cmabeval.experiment.ExperimentMetrics)
-            challenger_metrics (cmabeval.experiment.ExperimentMetrics)
+            champion_metrics (banditry.experiment.ExperimentMetrics)
+            challenger_metrics (banditry.experiment.ExperimentMetrics)
         """
         self.champion = champion_metrics
         self.challenger = challenger_metrics

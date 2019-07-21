@@ -2,8 +2,8 @@ import pytest
 import numpy as np
 import pandas as pd
 
-from cmabeval import models
-from cmabeval.transformers import Preprocessor
+from banditry import models
+from banditry.transformers import Preprocessor
 
 
 @pytest.fixture

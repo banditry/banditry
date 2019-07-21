@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats, special
 
-from cmabeval.base import Seedable
-from cmabeval.experiment import ReplicationMetrics
+from banditry.base import Seedable
+from banditry.experiment import ReplicationMetrics
 
 
 def register_env(env, num_arms, num_context, num_time_steps=1000,

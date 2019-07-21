@@ -9,9 +9,9 @@ import pandas as pd
 from scipy import special as sps
 import matplotlib.pyplot as plt
 
-from cmabeval.base import Seedable
-from cmabeval.exceptions import NotFitted, InsufficientData
-from cmabeval import serialize, versioning
+from banditry.base import Seedable
+from banditry.exceptions import NotFitted, InsufficientData
+from banditry import serialize, versioning
 
 logger = logging.getLogger(__name__)
 ISO_8601_FMT = '%Y-%m-%dT%H:%M:%S.%f'

@@ -7,9 +7,9 @@ import scipy as sp
 from scipy import optimize, stats
 from scipy import special as sps
 
-from cmabeval.base import Seedable, BaseModel, PGBaseModel
-from cmabeval.exceptions import NotFitted, InsufficientData
-from cmabeval.transformers import Preprocessor
+from banditry.base import Seedable, BaseModel, PGBaseModel
+from banditry.exceptions import NotFitted, InsufficientData
+from banditry.transformers import Preprocessor
 
 logger = logging.getLogger(__name__)
 MAX_FLOAT = np.finfo(np.float).max
